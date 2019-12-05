@@ -1,4 +1,4 @@
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 import uuid
 import os
 from sklearn.cluster import DBSCAN, MeanShift, estimate_bandwidth
@@ -9,50 +9,54 @@ import numpy as np
 import math
 import random
 
+
 class drawer():
     ratio = 1
-    imgx = 1920 # max width
-    imgy = 1080 # max height
+    imgx = 1920 # Max width
+    imgy = 1080 # Max height
     prob_scale = 100000 # scaling of perlin noise/probabilistic points
     image = None # Result
     per_image = None # Perlin image
     per = None # Perlin 2D array
-    constellation_star_array = [] #Array of star coordinates
+    constellation_star_array = [] # Array of stars coordinates
+    seed = 0 # Seed of the sky
 
-    def __init__(self):
+    def __init__(self, seed = 0):
         self.imgx = self.imgx * self.ratio
         self.imgy = self.imgy * self.ratio
         self.image = Image.new("RGB", (self.imgx, self.imgy))
+        self.seed = seed
+        random.seed(self.seed)
+        print("SEED:", self.seed)
         
     def generate_sky(self):
         for x in range(self.imgx):
             for y in range(self.imgy):
-                n = 2
-                p = int(int.from_bytes(os.urandom(n), "little") * self.prob_scale/2**(n*8))                
-                if p < self.per[x][y]*0.00001:
-                    self.draw_star(x, y, 18, 255)
+                p = random.randint(0, self.prob_scale)             
+                if p <= int(self.per[x][y]*0.00001):
+                    self.draw_star(x, y, 18)
                     self.constellation_star_array.append((x, y))
-                elif p < self.per[x][y]*0.00006:
-                    self.draw_star(x, y, 12, 255)
+                elif p <= int(self.per[x][y]*0.00004):
+                    self.draw_star(x, y, 12)
                     self.constellation_star_array.append((x, y))
-                elif p < self.per[x][y]*0.0002:
-                    self.draw_star(x, y, 6, 192)
-                elif p < self.per[x][y]*0.0004:
-                    self.draw_star(x, y, 4, 128)
+                elif p <= int(self.per[x][y]*0.0002):
+                    self.draw_star(x, y, 6)
+                elif p <= int(self.per[x][y]*0.0004):
+                    self.draw_star(x, y, 4)
 
                     
     def generate_constellations(self):
         if not len(self.constellation_star_array):
             return
         # DBSCAN clustering algorithm
-        clustering = DBSCAN(eps=150, min_samples=1).fit(self.constellation_star_array)
+        #clustering = DBSCAN(eps=150, min_samples=1).fit(self.constellation_star_array)
         
         # MeanShift clustering algorithm
-        #bw = estimate_bandwidth(self.constellation_star_array, quantile=0.15, n_samples=len(self.constellation_star_array))
-        #print("Bandwidth estimated:", bw)
-        #if not bw:
-        #    bw = 400
-        #clustering = MeanShift(bandwidth=bw).fit(self.constellation_star_array)
+        bw = estimate_bandwidth(self.constellation_star_array, quantile=0.08, n_samples=len(self.constellation_star_array))
+        print("Estimated Bandwidth:", bw)
+        if not bw:
+            bw = 200
+        clustering = MeanShift(bandwidth=bw).fit(self.constellation_star_array)
         
         # Finding clusters
         constellation_dict = {}
@@ -68,12 +72,10 @@ class drawer():
                 
         draw = ImageDraw.Draw(self.image)
         
-        print("constellation_dict:", constellation_dict)
         links = {}
         for k, cluster in constellation_dict.items():
             ## Delaunay triangulation
-            print("k", k)
-            print("cluster", cluster)
+            # http://www.qhull.org/html/qh-optq.htm#qhull
             for triangle in Delaunay(cluster).simplices.copy():
                 # Extracting lines from triangles
                 # INFO: Values are index of the cluster list, not points coordinates
@@ -84,68 +86,63 @@ class drawer():
                 links[k] = list(dict.fromkeys(links[k]))
             
             ## Generating links between points
-            print("links", links)
             # Distance calculus between points of each line
-            max_distance = 0
-            tmp = []
-            for pair in links[k]:
-                p1 = constellation_dict[k][pair[0]]
-                p2 = constellation_dict[k][pair[1]]
-                distance = ((p1[1]-p2[1])**2 + (p1[0]-p2[0])**2)**(1/2)
-                max_distance = max(distance, max_distance)
-                tmp.append((pair[0], pair[1], int(distance)))
-            links[k] = tmp
+            def get_distance(point1, point2):
+                return ((point1[1]-point2[1])**2 + (point1[0]-point2[0])**2)**(1/2)
+            
+            # Gravity point of a cluster
+            gravity_point = (
+                int(sum(map(lambda x: x[0], cluster)) / len(cluster)), 
+                int(sum(map(lambda x: x[1], cluster)) / len(cluster)))
+            
+            # Get nearest point from the gravity point
+            start_point = min(([point, get_distance(gravity_point, point)] for point in cluster), key=lambda x: x[1])[0]
+            start_point = cluster.index(start_point)
                 
-            # Points number
-            n = max(links[k], key= lambda x: x[1])[1]+1 
-            # Graph theory
+            ## Graph theory
             links_from_point = {}
             # Generating neigbours from a point
-            for triple in links[k]:
-                links_from_point[triple[0]] = links_from_point.get(triple[0], [])
-                links_from_point[triple[0]].append((triple[1], triple[2]))
-                links_from_point[triple[1]] = links_from_point.get(triple[1], [])
-                links_from_point[triple[1]].append((triple[0], triple[2]))
+            for pair in links[k]:
+                links_from_point[pair[0]] = links_from_point.get(pair[0], [])
+                links_from_point[pair[0]].append(pair[1])
+                links_from_point[pair[1]] = links_from_point.get(pair[1], [])
+                links_from_point[pair[1]].append(pair[0])
 
-            # Choice of the first point
-            # TODO
-            # First point is found with the samllest average distance between all its neigbours
-            average_distance = max_distance
-            tmp_average_distance = 0
-            point = 0
-            for k, v in links_from_point.items():
-                random.shuffle(v)
-                tmp_average_distance = 0
-                for pair in v:
-                    tmp_average_distance += pair[1]
-                tmp_average_distance /= len(v)
-                if average_distance > tmp_average_distance:
-                    point = k
-                    average_distance = tmp_average_distance
-            
-            # Breadth-first search algorithm
+            # Spreading Algorithm
             lines = []
-            queue = [point]
-            used_points = [point]
-            while len(queue):
-                s = queue.pop()
-                for neighbour in links_from_point[s]:
-                    if neighbour[0] not in used_points:
-                        used_points.append(neighbour[0])
-                        lines.append((s, neighbour[0]))
-                        queue.append(neighbour[0])
-            print("final lines:", lines)
-            
+            used_points = [start_point]
+            stack = [start_point]
+            while stack:
+                cumulativ_dist = 0
+                point = stack.pop()
+                # Finding the maxmimum local distance
+                cumulativ_dist_max = max(([point, get_distance(cluster[point], cluster[neighbour])] for neighbour in links_from_point[point]), key=lambda x: x[1])[1]
+                while True:   
+                    # If no neighbour
+                    if not [neighbour for neighbour in links_from_point[point] if neighbour not in used_points]:
+                        break
+                    # First iteration
+                    if cumulativ_dist == 0:
+                        stack.append(point)
+                    # Finding the minimum local distance
+                    target, target_dist = min(([neighbour, get_distance(cluster[point], cluster[neighbour])] for neighbour in links_from_point[point] if neighbour not in used_points), key=lambda x: x[1])
+                    
+                    if (cumulativ_dist + target_dist) <= cumulativ_dist_max:
+                        cumulativ_dist += target_dist
+                        lines.append((point, target))
+                        used_points.append(target)
+                        point = target
+                    else:
+                        break
+            # Random added line
+            lines.append(links[k][random.randint(0, len(links[k])-1)])
+              
             # Plotting
             for line in lines:
                 tmp = []
                 for label in line:
                     tmp.append(cluster[label])
                 draw.line(tmp, fill=(192, 192, 192), width=0)
-                    
-        for k, v in links.items():
-            print(k, v)
-
 
     def generate_perlin_array(
         self,
@@ -156,7 +153,6 @@ class drawer():
 
         shape = (self.imgx, self.imgy)
         arr = np.zeros(shape)
-        seed = int.from_bytes(os.urandom(1), "little")
         for i in range(shape[0]):
             for j in range(shape[1]):
                 arr[i][j] = noise.pnoise2(i / scale,
@@ -166,7 +162,7 @@ class drawer():
                     lacunarity=lacunarity,
                     repeatx=1024,
                     repeaty=1024,
-                    base=seed
+                    base=self.seed
                     )
         
         # Postprocessing
@@ -183,9 +179,12 @@ class drawer():
             for x in range(self.imgx):
                 grey = int(self.per[x][y]/self.prob_scale*255)
                 self.per_image.putpixel((x, y), (grey, grey, grey))
-                
+                background_color = int(self.per[x][y]/self.prob_scale*48)+random.randint(-5, 5)
+                pos = (self.imgx-x-1, self.imgy-y-1)
+                self.image.putpixel(pos, (background_color-20, 0, background_color))
+        self.image.filter(ImageFilter.BLUR)
     
-    def draw_star(self, x, y, n, grey):
+    def draw_star(self, x, y, n):
         def gaussian(x, mu, sig):
             """Gaussian bell function"""
             return np.exp(-np.power(x - mu, 2.) / (2 * np.power(sig, 2.)))
@@ -195,7 +194,7 @@ class drawer():
                 return n**(1/3)
             return ((sqrt3(a**2)-sqrt3(x**2))**3)**(1/2)
         # Generate a random blue color
-        blue_color = int.from_bytes(os.urandom(1), "little")/3+192
+        colors = [random.randint(192, 255) for i in range(3)]
         # Apply the mathematical functions on a grid of n*n pixels
         for j in range(n):
             for i in range(n):
@@ -207,10 +206,15 @@ class drawer():
                 intensity = (intensityX * intensityY)**(1/2)/int(n/2)
                 grey = int(intensity*255)
                 coord = ((x-int(n/2)+j)%self.imgx, (y-int(n/2)+i)%self.imgy)
-                # TODO 
-                # Use log to add intensities instead of finding the maximum local value
-                pixel = list([max(i, grey) for i in self.image.getpixel(coord)])
-                pixel[2] = max(self.image.getpixel(coord)[2], int(blue_color*intensity))
+                
+                pixel = tuple((max(self.image.getpixel(coord)[i], int(colors[i]*intensity))) for i in range(3))
                 # Create the pixel
                 self.image.putpixel(coord, tuple(pixel))
 
+
+if __name__ == "__main__":
+    d = drawer(0)
+    d.generate_perlin_array()
+    d.generate_sky()
+    d.generate_constellations()
+    d.image.show()
