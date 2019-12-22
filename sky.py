@@ -1,3 +1,6 @@
+# Python 3.6.8
+# Louis Delarue
+
 from PIL import Image, ImageDraw, ImageFilter
 import os
 from sklearn.cluster import DBSCAN, MeanShift, estimate_bandwidth
@@ -241,7 +244,7 @@ class drawer:
 
 
 if __name__ == "__main__":
-    seed = 0
+    seed = 216
     d = drawer(seed)
     d.generate_perlin_array()
     d.generate_sky()
